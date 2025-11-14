@@ -1,10 +1,12 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-# Import tools yang sudah kamu punya:
+
 from src.pdf_extractor import PDFExtractor
 from src.ai_analyzer import LegalAIAnalyzer
 from supabase import create_client
 import os, tempfile
+from mangum import Mangum
+handler = Mangum(app)
 
 app = FastAPI()
 
