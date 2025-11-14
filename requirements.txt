@@ -23,4 +23,6 @@ flake8==7.0.0
 fastapi
 uvicorn
 python-multipart
+mangum==0.17.0
+
 
