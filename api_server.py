@@ -1,14 +1,13 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-
 from src.pdf_extractor import PDFExtractor
 from src.ai_analyzer import LegalAIAnalyzer
 from supabase import create_client
 import os, tempfile
 from mangum import Mangum
-handler = Mangum(app)
 
 app = FastAPI()
+handler = Mangum(app)
 
 @app.post("/analyze")
 async def analyze_laporan(file: UploadFile = File(...)):
@@ -16,7 +15,6 @@ async def analyze_laporan(file: UploadFile = File(...)):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
-
     # 2. Upload ke Supabase Storage (optional)
     SUPABASE_URL = os.getenv("SUPABASE_URL")
     SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -26,15 +24,12 @@ async def analyze_laporan(file: UploadFile = File(...)):
     with open(tmp_path, "rb") as f:
         sb.storage().from_(bucket_name).upload(storage_path, f, {"content-type": "application/pdf"})
     storage_url = f"{bucket_name}/{storage_path}"
-
     # 3. Ekstraksi teks PDF
     extractor = PDFExtractor()
     doc_text = extractor.extract_text(tmp_path)
-
     # 4. Kirim ke AI Analyzer untuk analisis hukum
     analyzer = LegalAIAnalyzer()
     hasil_ai = analyzer.analyze(doc_text)
-
     # 5. Response ke frontend: hasil AI (JSON), status sukses
     os.remove(tmp_path)
     return JSONResponse({
