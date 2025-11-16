@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Legal Complaint Analyzer - Main Execution Script
-Processes PDF complaint documents and stores analysis in Supabase
-"""
 import os
 import sys
 from datetime import datetime
@@ -13,18 +8,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Cek jika 'src' sudah ada di path (untuk menghindari duplikasi jika diimpor)
+current_path = str(Path(__file__).parent.resolve())
+if current_path not in sys.path:
+    sys.path.insert(0, current_path)
 
-from src.database import DatabaseManager
-from src.pdf_extractor import PDFExtractor
-from src.ai_analyzer import LegalAIAnalyzer
-from src.models import Complaint, AnalysisResult, LegalArticle, Recommendation
-from utils.helpers import (
-    generate_complaint_number,
-    sanitize_filename,
-    print_separator,
-    print_section_header
-)
+try:
+    from src.database import DatabaseManager
+    from src.pdf_extractor import PDFExtractor
+    from src.ai_analyzer import LegalAIAnalyzer
+    from src.models import Complaint, AnalysisResult, LegalArticle, Recommendation
+    from utils.helpers import (
+        generate_complaint_number,
+        sanitize_filename,
+        print_separator,
+        print_section_header
+    )
+except ImportError as e:
+    print(f"Error: Gagal mengimpor modul. Pastikan semua file ada di 'src/' dan 'utils/'. Error: {e}")
+    sys.exit(1)
 
 
 class LegalComplaintProcessor:
@@ -59,6 +61,8 @@ class LegalComplaintProcessor:
             return {'success': False, 'error': 'File not found'}
         
         start_time = datetime.now()
+        complaint_id = None # Inisialisasi jika gagal di langkah awal
+        analysis_id = None
         
         try:
             # ═══════════════════════════════════════════════════════
@@ -86,7 +90,7 @@ class LegalComplaintProcessor:
             complaint = Complaint(
                 complaint_number=complaint_number,
                 pdf_filename=pdf_filename,
-                pdf_path=pdf_path,
+                pdf_path=pdf_path, # Path di server sementara
                 extracted_text=extracted_text,
                 status='processing',
                 uploaded_by=uploaded_by
@@ -168,7 +172,17 @@ class LegalComplaintProcessor:
             # ═══════════════════════════════════════════════════════
             print("\n💼 Saving legal articles...")
             
-            for article_data in analysis_result.get('pasal_utama', []):
+            articles_to_save = analysis_result.get('pasal_utama', []) + analysis_result.get('pasal_alternatif', [])
+            
+            for i, article_data in enumerate(articles_to_save):
+                # Tentukan tipe artikel jika tidak ada
+                article_type = article_data.get('article_type')
+                if not article_type:
+                    article_type = 'utama' if i < len(analysis_result.get('pasal_utama', [])) else 'alternatif'
+
+                # Tentukan is_primary
+                is_primary = article_data.get('is_primary', (article_type == 'utama'))
+
                 article = LegalArticle(
                     analysis_id=analysis_id,
                     pasal_number=article_data.get('pasal_number'),
@@ -177,32 +191,15 @@ class LegalComplaintProcessor:
                     bunyi_pasal=article_data.get('bunyi_pasal'),
                     elemen_konstitutif=article_data.get('elemen_konstitutif'),
                     elemen_terpenuhi=article_data.get('elemen_terpenuhi'),
-                    confidence_score=article_data.get('confidence_score'),
-                    confidence_level=article_data.get('confidence_level'),
-                    reasoning=article_data.get('reasoning'),
-                    is_primary=article_data.get('is_primary', True),
-                    article_type=article_data.get('article_type', 'utama')
-                )
-                self.db.create_legal_article(article)
-            
-            print(f"✓ Saved {len(analysis_result.get('pasal_utama', []))} primary legal articles")
-            
-            # Save alternative articles
-            for article_data in analysis_result.get('pasal_alternatif', []):
-                article = LegalArticle(
-                    analysis_id=analysis_id,
-                    pasal_number=article_data.get('pasal_number'),
-                    sumber_hukum=article_data.get('sumber_hukum'),
-                    judul_pasal=article_data.get('judul_pasal'),
                     confidence_score=article_data.get('confidence_score', 0.5),
                     confidence_level=article_data.get('confidence_level', 'Sedang'),
-                    reasoning=article_data.get('alasan'),
-                    is_primary=False,
-                    article_type='alternatif'
+                    reasoning=article_data.get('reasoning') or article_data.get('alasan'),
+                    is_primary=is_primary,
+                    article_type=article_type
                 )
                 self.db.create_legal_article(article)
             
-            print(f"✓ Saved {len(analysis_result.get('pasal_alternatif', []))} alternative articles")
+            print(f"✓ Saved {len(articles_to_save)} legal articles")
             
             # ═══════════════════════════════════════════════════════
             # STEP 6: Save Recommendations
@@ -251,9 +248,9 @@ class LegalComplaintProcessor:
             
             return {
                 'success': True,
-                'complaint_id': complaint_id,
+                'complaint_id': str(complaint_id),
                 'complaint_number': complaint_number,
-                'analysis_id': analysis_id,
+                'analysis_id': str(analysis_id),
                 'duration_seconds': total_duration
             }
             
@@ -261,33 +258,50 @@ class LegalComplaintProcessor:
             print(f"\n✗ Error during processing: {e}")
             import traceback
             traceback.print_exc()
+            
+            # Coba log error ke DB jika complaint_id sudah ada
+            try:
+                if complaint_id:
+                    self.db.update_complaint_status(complaint_id, 'error')
+                    self.db.log_action(
+                        complaint_id=complaint_id,
+                        analysis_id=analysis_id,
+                        action='PROCESSING_ERROR',
+                        action_by='system',
+                        details=str(e)
+                    )
+            except Exception as db_e:
+                print(f"✗ Failed to log processing error to DB: {db_e}")
+                
             return {'success': False, 'error': str(e)}
 
-
-def main():
-    """Main entry point"""
+# Bagian ini HANYA akan berjalan jika Anda menjalankan `python main.py`
+# Bagian ini TIDAK akan berjalan saat diimpor oleh `api_server.py`
+if __name__ == "__main__":
+    """Main entry point for CLI execution"""
     
     # Check if PDF path is provided
     if len(sys.argv) < 2:
         print("Usage: python main.py <path_to_pdf>")
-        print("Example: python main.py ./complaints/laporan_001.pdf")
+        print("Example: python main.py ./contoh_laporan_pengaduan.pdf")
         sys.exit(1)
     
     pdf_path = sys.argv[1]
     
     # Initialize processor
-    processor = LegalComplaintProcessor()
-    
-    # Process complaint
-    result = processor.process_complaint(pdf_path, uploaded_by='admin')
-    
-    if result['success']:
-        print(f"\n✅ Processing successful!")
-        print(f"Complaint Number: {result['complaint_number']}")
-    else:
-        print(f"\n✗ Processing failed: {result.get('error')}")
+    try:
+        processor = LegalComplaintProcessor()
+        
+        # Process complaint
+        result = processor.process_complaint(pdf_path, uploaded_by='admin-cli')
+        
+        if result['success']:
+            print(f"\n✅ Processing successful!")
+            print(f"Complaint Number: {result['complaint_number']}")
+        else:
+            print(f"\n✗ Processing failed: {result.get('error')}")
+            sys.exit(1)
+            
+    except Exception as e:
+        print(f"FATAL: Gagal menginisialisasi LegalComplaintProcessor. Cek .env. Error: {e}")
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
